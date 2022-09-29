@@ -16,7 +16,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func Test_OldSchemaIsCompatibleWithNewStructs(t *testing.T) {
+// old structs
+type (
+	OldAdvertisement struct {
+		PreviousID ipld.Link
+		Provider   string
+		Addresses  []string
+		Signature  []byte
+		Entries    ipld.Link
+		ContextID  []byte
+		Metadata   []byte
+		IsRm       bool
+	}
+)
+
+func Test_StructsAndSchemaAreBackwardCompatible(t *testing.T) {
 	oldSchema, err := ipld.LoadSchemaBytes([]byte(`
 		type EntryChunk struct {
 			Entries List_Bytes
@@ -42,13 +56,38 @@ func Test_OldSchemaIsCompatibleWithNewStructs(t *testing.T) {
 	require.NoError(t, err)
 
 	rng := rand.New(rand.NewSource(1413))
-	ad := generateAdvertisement(rng)
+
+	mhs := util.RandomMultihashes(7, rng)
+	prev := ipld.Link(cidlink.Link{Cid: cid.NewCidV1(cid.Raw, mhs[0])})
+	oldAd := &OldAdvertisement{
+		PreviousID: prev,
+		Provider:   mhs[1].String(),
+		Addresses: []string{
+			mhs[2].String(),
+		},
+		Entries:   cidlink.Link{Cid: cid.NewCidV1(cid.Raw, mhs[3])},
+		ContextID: mhs[4],
+		Metadata:  mhs[5],
+		Signature: mhs[6],
+		IsRm:      false,
+	}
+
 	oldAdType := oldSchema.TypeByName("Advertisement")
-	nodeFromOldAdType := bindnode.Wrap(ad, oldAdType).Representation()
+	nodeFromOldAdType := bindnode.Wrap(oldAd, oldAdType).Representation()
 
 	newAd, err := stischema.UnwrapAdvertisement(nodeFromOldAdType)
 	require.NoError(t, err)
-	require.Equal(t, ad, newAd)
+
+	// we have to compare manually field by field as old struct doesn't have ExtendedProvider
+	require.Equal(t, oldAd.PreviousID, newAd.PreviousID)
+	require.Equal(t, oldAd.Provider, newAd.Provider)
+	require.Equal(t, oldAd.Addresses, newAd.Addresses)
+	require.Equal(t, oldAd.Signature, newAd.Signature)
+	require.Equal(t, oldAd.Entries, newAd.Entries)
+	require.Equal(t, oldAd.ContextID, newAd.ContextID)
+	require.Equal(t, oldAd.Metadata, newAd.Metadata)
+	require.Equal(t, oldAd.IsRm, newAd.IsRm)
+	require.Nil(t, newAd.ExtendedProvider)
 
 	chunk := generateEntryChunk(rng)
 	oldChunkType := oldSchema.TypeByName("EntryChunk")

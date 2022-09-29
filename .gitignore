@@ -2,3 +2,6 @@
 *~
 *.car
 *.out
+.terraform
+.vscode
+*.code-workspace
