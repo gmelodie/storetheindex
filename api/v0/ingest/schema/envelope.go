@@ -19,6 +19,7 @@ var log = logging.Logger("indexer/schema")
 const (
 	adSignatureCodec  = "/indexer/ingest/adSignature"
 	adSignatureDomain = "indexer"
+	epSignatureCodec  = "/indexer/ingest/extendedProviderSignature"
 )
 
 type advSignatureRecord struct {
@@ -47,6 +48,35 @@ func (r *advSignatureRecord) MarshalRecord() ([]byte, error) {
 
 func (r *advSignatureRecord) UnmarshalRecord(buf []byte) error {
 	r.advID = buf
+	return nil
+}
+
+type epSignatureRecord struct {
+	domain  *string
+	codec   []byte
+	payload []byte
+}
+
+func (r *epSignatureRecord) Domain() string {
+	if r.domain != nil {
+		return *r.domain
+	}
+	return adSignatureDomain
+}
+
+func (r *epSignatureRecord) Codec() []byte {
+	if r.codec != nil {
+		return r.codec
+	}
+	return []byte(epSignatureCodec)
+}
+
+func (r *epSignatureRecord) MarshalRecord() ([]byte, error) {
+	return r.payload, nil
+}
+
+func (r *epSignatureRecord) UnmarshalRecord(buf []byte) error {
+	r.payload = buf
 	return nil
 }
 
@@ -89,6 +119,40 @@ func signaturePayload(ad *Advertisement, oldFormat bool) ([]byte, error) {
 	return multihash.Sum(sigBuf.Bytes(), multihash.SHA2_256, -1)
 }
 
+// extendedSignaturePayload generates the data payload used to compute the signature for ExtendedProvider.
+func extendedProviderSignaturePayload(ad *Advertisement, p *Provider) ([]byte, error) {
+	if ad.IsRm {
+		return nil, fmt.Errorf("rm ads are not supported for extended provider signatures")
+	}
+
+	bindex := cid.Undef.Bytes()
+	if ad.PreviousID != nil {
+		bindex = ad.PreviousID.(cidlink.Link).Cid.Bytes()
+	}
+	ent := ad.Entries.(cidlink.Link).Cid.Bytes()
+
+	// Signature data is previousID+entries+metadata+isRm
+	var sigBuf bytes.Buffer
+
+	var addrsLen int
+	for _, addr := range p.Addresses {
+		addrsLen += len(addr)
+	}
+
+	sigBuf.Grow(len(bindex) + len(ent) + len(ad.Provider) + len(ad.ContextID) + len(p.ID) + addrsLen + len(p.Metadata))
+	sigBuf.Write(bindex)
+	sigBuf.Write(ent)
+	sigBuf.WriteString(ad.Provider)
+	sigBuf.Write(ad.ContextID)
+	sigBuf.WriteString(p.ID)
+	for _, addr := range p.Addresses {
+		sigBuf.WriteString(addr)
+	}
+	sigBuf.Write(p.Metadata)
+
+	return multihash.Sum(sigBuf.Bytes(), multihash.SHA2_256, -1)
+}
+
 // Sign signs an advertisement using the given private key.
 func (ad *Advertisement) Sign(key crypto.PrivKey) error {
 	advID, err := signaturePayload(ad, false)
@@ -106,6 +170,45 @@ func (ad *Advertisement) Sign(key crypto.PrivKey) error {
 	}
 	ad.Signature = sig
 	return nil
+}
+
+// SignWithExtendedProviders signs the ad on behalf of all
+func (ad *Advertisement) SignWithExtendedProviders(key crypto.PrivKey, keyFetcher func(Provider) (crypto.PrivKey, error)) error {
+	if ad.ExtendedProvider == nil || len(ad.ExtendedProvider.Providers) == 0 {
+		return fmt.Errorf("the ad must have at least one extended provider")
+	}
+
+	seenTopLevelProvider := false
+	for _, p := range ad.ExtendedProvider.Providers {
+		payload, err := extendedProviderSignaturePayload(ad, &p)
+		if err != nil {
+			return err
+		}
+		privKey, err := keyFetcher(p)
+		if err != nil {
+			return err
+		}
+
+		envelope, err := record.Seal(&epSignatureRecord{payload: payload}, privKey)
+		if err != nil {
+			return err
+		}
+
+		sig, err := envelope.Marshal()
+		if err != nil {
+			return err
+		}
+
+		p.Signature = sig
+
+		if p.ID == ad.Provider {
+			seenTopLevelProvider = true
+		}
+	}
+	if !seenTopLevelProvider {
+		return fmt.Errorf("extended providers must contain provider from the encapsulating advertisement")
+	}
+	return ad.Sign(key)
 }
 
 // VerifySignature verifies that the advertisement has been signed and
@@ -148,6 +251,37 @@ func (ad *Advertisement) VerifySignature() (peer.ID, error) {
 
 	if oldFormat {
 		log.Warnw("advertisement has deprecated signature format", "signer", signerID)
+	}
+
+	if ad.ExtendedProvider != nil {
+		rec := &epSignatureRecord{}
+		seenTopLevelProv := false
+		for _, p := range ad.ExtendedProvider.Providers {
+
+			_, err = record.ConsumeTypedEnvelope(p.Signature, rec)
+			if err != nil {
+				return "", err
+			}
+
+			// Calculate our signature payload
+			genPayload, err := extendedProviderSignaturePayload(ad, &p)
+			if err != nil {
+				return "", err
+			}
+
+			// Check that our own hash is equal to the hash from the signature.
+			if !bytes.Equal(genPayload, rec.payload) {
+				return "", errors.New("invalid signature")
+			}
+
+			if p.ID == ad.Provider {
+				seenTopLevelProv = true
+			}
+		}
+
+		if !seenTopLevelProv {
+			return "", fmt.Errorf("extended providers must contain provider from the encapsulating ad")
+		}
 	}
 
 	return signerID, nil
