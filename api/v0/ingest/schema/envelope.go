@@ -173,14 +173,15 @@ func (ad *Advertisement) Sign(key crypto.PrivKey) error {
 }
 
 // SignWithExtendedProviders signs the ad on behalf of all
-func (ad *Advertisement) SignWithExtendedProviders(key crypto.PrivKey, keyFetcher func(Provider) (crypto.PrivKey, error)) error {
+func (ad *Advertisement) SignWithExtendedProviders(key crypto.PrivKey, keyFetcher func(*Provider) (crypto.PrivKey, error)) error {
 	if ad.ExtendedProvider == nil || len(ad.ExtendedProvider.Providers) == 0 {
 		return fmt.Errorf("the ad must have at least one extended provider")
 	}
 
 	seenTopLevelProvider := false
-	for _, p := range ad.ExtendedProvider.Providers {
-		payload, err := extendedProviderSignaturePayload(ad, &p)
+	for i, _ := range ad.ExtendedProvider.Providers {
+		p := &ad.ExtendedProvider.Providers[i]
+		payload, err := extendedProviderSignaturePayload(ad, p)
 		if err != nil {
 			return err
 		}
