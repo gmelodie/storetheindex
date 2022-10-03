@@ -121,8 +121,8 @@ func TestAdvertisement_SignWithExtendedProviderAndVerify(t *testing.T) {
 		},
 	}
 
-	err = adv.SignWithExtendedProviders(priv, func(p *stischema.Provider) (crypto.PrivKey, error) {
-		switch p.ID {
+	err = adv.SignWithExtendedProviders(priv, func(p string) (crypto.PrivKey, error) {
+		switch p {
 		case ep1PeerID.String():
 			return ep1Priv, nil
 		case ep2PeerID.String():
@@ -130,7 +130,7 @@ func TestAdvertisement_SignWithExtendedProviderAndVerify(t *testing.T) {
 		case mpPeerID.String():
 			return mpPriv, nil
 		default:
-			return nil, fmt.Errorf("Unknown provider %s", p.ID)
+			return nil, fmt.Errorf("Unknown provider %s", p)
 		}
 	})
 
@@ -194,12 +194,12 @@ func TestAdvertisement_SignFailsIfTopLevelProviderIsNotInExtendedList(t *testing
 		},
 	}
 
-	err = adv.SignWithExtendedProviders(priv, func(p *stischema.Provider) (crypto.PrivKey, error) {
-		switch p.ID {
+	err = adv.SignWithExtendedProviders(priv, func(p string) (crypto.PrivKey, error) {
+		switch p {
 		case ep1PeerID.String():
 			return ep1Priv, nil
 		default:
-			return nil, fmt.Errorf("Unknown provider %s", p.ID)
+			return nil, fmt.Errorf("Unknown provider %s", p)
 		}
 	})
 
